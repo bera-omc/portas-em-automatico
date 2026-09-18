@@ -1,26 +1,13 @@
 ---
 name: portas-em-automatico
-description: |
-  Use this skill to run an APPROVED plan in supervised autonomous mode — Claude keeps executing without re-asking for each step, but hard cross-checks force it to PAUSE before irreversible actions, on genuine forks, on repeated errors, and to checkpoint state before the context degrades. Complements (does not replace) daquele-jeito: that one is plan-first + audit; this one governs the execution phase after you "release" the plan. Pairs with the harness hooks shipped in this skill's hooks/ folder.
-
-  TRIGGER when: (1) the user invokes `/portas-em-automatico`; OR (2) after a plan is approved, the user attaches a release phrase as a final/standalone instruction. Release phrases (case-insensitive): Portuguese "portas em automático" / "põe as portas em automático" / "pode soltar em automático"; English "doors to automatic" / "doors at automatic" / "doors to automatic and cross-check". The bare word "cross-check" triggers ONLY when used as a command to engage the mode (e.g. "cross-check and go"), not when it is part of a data task.
-
-  DO NOT TRIGGER when: the phrase is negated ("não põe em automático"), past tense, a meta-question ("o que é doors to automatic?"), or when "cross-check" means a literal data-reconciliation task ("faça o cross-check dessas duas planilhas"). When in doubt, prefer the slash command.
-hooks:
-  PostToolUse:
-    - matcher: Bash
-      hooks:
-        - type: command
-          command: "./hooks/error-circuit-breaker.sh"
-  PostToolUseFailure:
-    - matcher: Bash
-      hooks:
-        - type: command
-          command: "./hooks/error-circuit-breaker.sh"
-  PreCompact:
-    - hooks:
-        - type: command
-          command: "./hooks/precompact-checkpoint.sh"
+description: >-
+  Execute an approved plan under supervised autonomy: continue through approved steps, but pause on
+  irreversible actions, material plan drift, a genuine fork, or three repeated errors. Complements
+  daquele-jeito by governing execution after release. Trigger only with `/portas-em-automatico`, or
+  after plan approval with a final release phrase: "portas em automático", "põe as portas em
+  automático", "pode soltar em automático", "doors to automatic", or "doors to automatic and
+  cross-check". Do not trigger for negated, past-tense, or explanatory uses, or when
+  "cross-check" means a data-reconciliation task.
 ---
 
 # Portas em automático — supervised autonomous execution
@@ -55,7 +42,7 @@ You are past approval. Do **not** re-ask permission for steps already in the app
 
 ## Cross-checks — PAUSE and bring the human back in
 
-Stop and bring the human back in when ANY of these is true. **Default to `AskUserQuestion` (click-question) for any pause reducible to ≤4 discrete options** (proceed / amend / abort, staging / prod, and so on) — the same rule as daquele-jeito §1.1, and it holds even when this skill runs standalone. Fall back to a plain report-and-wait only for a genuinely open-ended pause (e.g. #4, where you report an error and your hypothesis). They are written as **countable conditions** on purpose: vague self-states ("if you feel unsure") decay and you may not detect them; checkable conditions survive a long, full session.
+Stop and bring the human back in when ANY of these is true. Use a concise choice prompt when the pause has a small set of real options; otherwise give a short report and wait. They are written as **countable conditions** on purpose: vague self-states ("if you feel unsure") decay and you may not detect them; checkable conditions survive a long session.
 
 1. **Plan drift.** An approved step turns out wrong, a dependency does not exist, or scope grows beyond the plan. Do not force the original plan — state the divergence, propose an amendment, validate it, then continue.
 2. **Destructive / irreversible — cross-check before acting.** Before ANY command that deletes, overwrites, or moves files *outside the project directory*, and before any outward or irreversible action (deploy, DB migration, network mutation, sending anything external, force-push, publishing). State exactly what will change, then confirm.
@@ -67,23 +54,16 @@ Also pause if a **kludge/shortcut appears mid-execution** that would add silent 
 
 ## Context discipline (be honest: you cannot reliably measure context)
 
-You do **not** have a trustworthy gauge of how full the context window is, and these very instructions may be among the first things dropped when it compacts. So do not rely on "I'll notice it filling up":
+You do **not** have a trustworthy gauge of how full the context window is. Do not rely on "I'll notice it filling up":
 
 - Every ~5 completed steps, or before a large sub-task, (re)write a checkpoint file **`SESSION.md`** in the project: current goal · files touched · decisions made · next step. This is your state *outside* the context window — it survives compaction.
-  - **When you write the checkpoint, restate the session's anchor formats too.** In particular: questions reducible to ≤4 options go through `AskUserQuestion` (click-question), never inline text. The checkpoint is re-read after compaction, so restating the format there is what keeps it from decaying late in a long session (cf. daquele-jeito §1.1).
+  - When you write the checkpoint, restate the material decision, constraints, and the next action. Re-read it before resuming a long task.
 - Redirect verbose command output to files; do not dump long logs into the conversation just to read them.
-- The real gauge is the human's status line (context %). If asked to `/compact`, write the checkpoint first, then comply.
+- If the runtime signals that context is constrained, write the checkpoint before continuing.
 
-## Instruction vs enforcement (read this)
+## Runtime boundary
 
-Everything above is **instruction** — you will try to honor it, but instruction is not a hard guarantee, especially under a full context or mid-loop. The **enforcement** layer splits in two: the scan/destruction blocker runs **globally** (always on, in `~/.claude/settings.json` — added by `install.sh`), and the mode-behavior hooks are **bundled in this skill's frontmatter** (active only while the skill is engaged). Both are backed by the scripts in `hooks/`:
-
-- `block-broad-scan.py` (PreToolUse / Bash, **global / always-on**) — hard-blocks `find /`, `find ~`, broad recursive greps, and `rm -rf` on dangerous targets. Runs *before* the permission mode, so it holds even under acceptEdits / bypass. Enforces cross-check #3 (and the destructive half of #2).
-- `error-circuit-breaker.sh` (PostToolUse + **PostToolUseFailure** / Bash) — uses the dedicated failure event to count consecutive failures per session and trips after a threshold (default 4). Backstop for cross-check #4 — the instruction tells you to stop at 3×, so this hook (one higher) fires only if you blew past that self-check.
-- `precompact-checkpoint.sh` (PreCompact) — snapshots the transcript right before automatic compaction. Backstop for context discipline.
-- `statusline-context.sh` — surfaces the live context % to the human (the real gauge for #context discipline).
-
-If the hooks are not installed, treat the cross-checks as best-effort only, and lean toward pausing *more*, not less.
+The cross-checks above are the portable operating contract. On Claude Code, the optional hook installation adds the existing scan blocker and status line. On Codex, native permission and destructive-action safeguards remain authoritative; do not claim that Claude hooks are active. In either runtime, lean toward pausing when a destructive action, a third repeated failure, or a genuine fork appears.
 
 ## Self-audit before "done"
 
